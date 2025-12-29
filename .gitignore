@@ -17,3 +17,5 @@ huggingface/
 .gitattributes
 
 .python-version
+
+test.py
