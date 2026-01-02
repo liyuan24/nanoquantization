@@ -6,6 +6,7 @@ from datasets import load_dataset
 import torch
 from tqdm import tqdm
 
+
 def calculate_perplexity(
     model: nn.Module,
     tokenizer: AutoTokenizer,
@@ -31,7 +32,7 @@ def calculate_perplexity(
         # mask out the token ids that have been calcuated loss in last window
         labels[:, :-target_ids_in_window] = -100
         with torch.no_grad():
-            cross_entropy_loss = model.compute_loss(input_ids[:,:-1], labels[:,1:])
+            cross_entropy_loss = model.compute_loss(input_ids[:, :-1], labels[:, 1:])
         cross_entropy_losses.append(cross_entropy_loss * target_ids_in_window)
         last_end_ind = end_ind
     ppl = torch.exp(torch.stack(cross_entropy_losses).sum() / seq_len)
@@ -58,13 +59,13 @@ if __name__ == "__main__":
         rms_norm_eps=hf_config.rms_norm_eps,
     )
     load_model(model, model_path)
-    ppl = calculate_perplexity(
-        model,
-        tokenizer,
-        window_size=2028,
-        stride=512,
-        dataset_id="wikitext",
-        dataset_subset="wikitext-2-v1",
-        dataset_split="test",
-    )
-    print(f"Perplexity for Qwen3-0.6B: {ppl:.2f}")
+    # ppl = calculate_perplexity(
+    #     model,
+    #     tokenizer,
+    #     window_size=2028,
+    #     stride=512,
+    #     dataset_id="wikitext",
+    #     dataset_subset="wikitext-2-v1",
+    #     dataset_split="test",
+    # )
+    # print(f"Perplexity for Qwen3-0.6B: {ppl:.2f}")

@@ -31,28 +31,5 @@ class RMSNorm(nn.Module):
         x = x.to(orig_dtype).mul_(self.weight)
         return x
 
-    @torch.compile
-    def rms_norm_with_residual(
-        self, x: torch.Tensor, residual: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Add residual to the input x before applying RMSNorm. The result of addition will become the new residual.
-
-        We use this function to fuse the RMSNorm and residual addition for better performance.
-        """
-        orig_dtype = x.dtype
-        x = x.float().add_(residual.float())
-        residual = x.to(orig_dtype)
-        inverse_vars = torch.rsqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
-        x.mul_(inverse_vars)
-        # convert back to original data type and then multiply by weight since weight is of original data type
-        x = x.to(orig_dtype).mul_(self.weight)
-        return x, residual
-
-    def forward(
-        self, x: torch.Tensor, residual: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if residual is None:
-            return self.rms_norm(x)
-        else:
-            return self.rms_norm_with_residual(x, residual)
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.rms_norm(x)

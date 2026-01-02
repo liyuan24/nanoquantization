@@ -18,4 +18,4 @@ huggingface/
 
 .python-version
 
-test.py
+test*.py

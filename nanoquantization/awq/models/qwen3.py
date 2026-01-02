@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -29,10 +29,18 @@ class Qwen3Attention(nn.Module):
             max_position_embeddings=max_position_embeddings,
             base=rope_theta,
         )
-        self.q_proj = nn.Linear(hidden_size, total_num_heads * self.head_dim)
-        self.k_proj = nn.Linear(hidden_size, total_num_kv_heads * self.head_dim)
-        self.v_proj = nn.Linear(hidden_size, total_num_kv_heads * self.head_dim)
-        self.o_proj = nn.Linear(total_num_heads * self.head_dim, hidden_size)
+        self.q_proj = nn.Linear(
+            hidden_size, total_num_heads * self.head_dim, bias=False
+        )
+        self.k_proj = nn.Linear(
+            hidden_size, total_num_kv_heads * self.head_dim, bias=False
+        )
+        self.v_proj = nn.Linear(
+            hidden_size, total_num_kv_heads * self.head_dim, bias=False
+        )
+        self.o_proj = nn.Linear(
+            total_num_heads * self.head_dim, hidden_size, bias=False
+        )
         self.q_norm = RMSNorm(norm_size=self.head_dim, eps=rms_norm_eps)
         self.k_norm = RMSNorm(norm_size=self.head_dim, eps=rms_norm_eps)
 
@@ -85,9 +93,9 @@ class Qwen3MLP(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
-        self.up_proj = nn.Linear(hidden_size, intermediate_size)
-        self.gate_proj = nn.Linear(hidden_size, intermediate_size)
-        self.down_proj = nn.Linear(intermediate_size, hidden_size)
+        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -142,7 +150,6 @@ class Qwen3Block(nn.Module):
         self,
         x: torch.Tensor,
         position_ids: torch.Tensor,
-        residual: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         we can simply do
@@ -152,21 +159,15 @@ class Qwen3Block(nn.Module):
         But we can see that add is one kernel and norm is another kernel. Here we fuse the add and norm into one kernel.
 
         Arguments:
-            x: [total_tokens, hidden_size]
-            position_ids: [total_tokens]
-            residual: [total_tokens, hidden_size]
+            x: [batch_size, sequence_length, hidden_size]
+            position_ids: [batch_size, sequence_length]
+            residual: [batch_size, sequence_length, hidden_size]
         Returns:
-            output: [total_tokens, hidden_size]
+            output: [batch_size, sequence_length, hidden_size]
         """
-        if residual is None:
-            x, residual = self.input_layernorm(x), x
-        else:
-            x, residual = self.input_layernorm(x, residual)
-        # shape: [total_tokens, hidden_size]
-        x = self.self_attn(x, position_ids)
-        x, residual = self.post_attention_layernorm(x, residual)
-        x = self.mlp(x)
-        return x, residual
+        x = x + self.self_attn(self.input_layernorm(x), position_ids)
+        x = x + self.mlp(self.post_attention_layernorm(x))
+        return x
 
 
 class Qwen3Model(nn.Module):
@@ -216,11 +217,10 @@ class Qwen3Model(nn.Module):
         """
         # shape: [batch_size, sequence_length, hidden_size]
         x = self.embed_tokens(x)
-        residual = None
         for layer in self.layers:
-            x, residual = layer(x, position_ids, residual)
+            x = layer(x, position_ids)
         # post-norm
-        x, _ = self.norm(x, residual)
+        x = self.norm(x)
         return x
 
 
@@ -260,6 +260,77 @@ class Qwen3ForCausalLM(nn.Module):
         if tie_word_embeddings:
             self.lm_head.weight.data = self.model.embed_tokens.weight.data
 
+    def get_embed_output(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Arguments:
+            x: [batch_size, sequence_length]
+        Returns:
+            output: [batch_size, sequence_length, hidden_size]
+        """
+        return self.model.embed_tokens(x)
+
+    def get_model_layers(self) -> List[nn.Module]:
+        return self.model.layers
+
+    @staticmethod
+    def get_layers_for_scaling(
+        module: Qwen3Block, inputs: Dict[str, Any], module_kwargs: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        layers = []
+
+        # attention input
+        layers.append(
+            {
+                "prev_op": module.input_layernorm,
+                "layers": [
+                    module.self_attn.q_proj,
+                    module.self_attn.k_proj,
+                    module.self_attn.v_proj,
+                ],
+                "inp": inputs["self_attn.q_proj"],
+                "module2inspect": module.self_attn,
+                "module_kwargs": module_kwargs,
+            }
+        )
+        # skip scaling o_proj when GQA is enabled
+        # attention output: https://github.com/mit-han-lab/llm-awq/pull/67#issue-1850622696
+        if module.self_attn.num_heads == module.self_attn.num_kv_heads:
+            layers.append(
+                {
+                    "prev_op": module.self_attn.v_proj,
+                    "layers": [
+                        module.self_attn.o_proj,
+                    ],
+                    "inp": inputs["self_attn.o_proj"],
+                }
+            )
+
+        # MLP up projection
+        layers.append(
+            {
+                "prev_op": module.post_attention_layernorm,
+                "layers": [
+                    module.mlp.up_proj,
+                    module.mlp.gate_proj,
+                ],
+                "inp": inputs["mlp.up_proj"],
+                "module2inspect": module.mlp,
+            }
+        )
+
+        # MLP down projection
+        layers.append(
+            {
+                "prev_op": module.mlp.up_proj,
+                "layers": [
+                    module.mlp.down_proj,
+                ],
+                "inp": inputs["mlp.down_proj"],
+            }
+        )
+
+        return layers
+
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         """
         Arguments:
@@ -277,7 +348,11 @@ class Qwen3ForCausalLM(nn.Module):
             labels: [batch_size, sequence_length]
         """
         seq_len = x.shape[1]
-        position_ids = torch.arange(seq_len, dtype=torch.int32, device=x.device).unsqueeze(0).cuda(non_blocking=True)
+        position_ids = (
+            torch.arange(seq_len, dtype=torch.int32, device=x.device)
+            .unsqueeze(0)
+            .cuda(non_blocking=True)
+        )
         hidden_states = self.model(x, position_ids)
         logits = self.lm_head(hidden_states)
         loss = F.cross_entropy(logits.view(-1, logits.shape[-1]), labels.view(-1))
