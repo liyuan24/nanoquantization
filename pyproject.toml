@@ -3,4 +3,12 @@ name = "nanoquantization"
 version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "safetensors>=0.4.0",
+    "triton>=2.0.0",
+    "datasets>=2.0.0",
+    "accelerate>=0.20.0",
+    "huggingface-hub>=0.20.0",
+]

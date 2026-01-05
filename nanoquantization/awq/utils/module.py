@@ -25,3 +25,24 @@ def get_op_by_name(module: nn.Module, name: str) -> nn.Module:
         if module_name == name:
             return submodule
     raise ValueError(f"op {name} not found in module {module}")
+
+# TransformerBlock (layer)
+# ├── self_attn (Module)
+# │   ├── q_proj (Linear)
+# │   ├── k_proj (Linear)
+# │   └── v_proj (Linear)
+# └── mlp (Module)
+#     ├── gate_proj (Linear)
+#     └── up_proj (Linear)
+def set_op_by_name(module: nn.Module, name: str, op: nn.Module) -> None:
+    levels = name.split(".")
+    if len(levels) > 1:
+        mod_ = module
+        for level in levels[:-1]:
+            if level.isdigit():
+                mod_ = mod_[int(level)]
+            else:
+                mod_ = getattr(mod_, level)
+        setattr(mod_, levels[-1], op)
+    else:
+        setattr(module, name, op)

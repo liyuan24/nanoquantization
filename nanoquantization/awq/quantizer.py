@@ -1,10 +1,14 @@
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple, Union
+
+from tqdm import tqdm
+from nanoquantization.awq.layers.gemm import WQLinear_GEMM
 from nanoquantization.awq.utils.calibration_data import get_calibration_data
 from nanoquantization.awq.utils.module import (
     get_named_linear,
     get_op_by_name,
     get_op_name,
+    set_op_by_name,
 )
 from nanoquantization.layers.norm import RMSNorm
 import torch.nn as nn
@@ -28,6 +32,7 @@ class AWQQuantizer:
         max_seq_len: int = 512,
         apply_clip: bool = True,
         fake_quantization: bool = False,
+        output_dtype: torch.dtype = torch.bfloat16,
     ):
         self.model = model
         self.w_bits = w_bits
@@ -42,7 +47,8 @@ class AWQQuantizer:
         self.tokenizer = tokenizer
         self.apply_clip = apply_clip
         self.fake_quantization = fake_quantization
-
+        self.output_dtype = output_dtype
+        
     @torch.inference_mode()
     def _module_forward(
         self, module: nn.Module, x: torch.Tensor, module_kwargs: Dict[str, Any]
@@ -114,7 +120,7 @@ class AWQQuantizer:
         )
         model_layers = self.model.get_model_layers()
         self.inps = embed_output
-        for transformer_block in model_layers:
+        for transformer_block in tqdm(model_layers, desc="Quantizing model layers"):
             named_linears = get_named_linear(transformer_block)
             inputs = self._get_inputs(transformer_block, named_linears)
             scaling_layers_config = self.model.get_layers_for_scaling(
@@ -143,7 +149,18 @@ class AWQQuantizer:
     def _apply_quant(
         self, transformer_block: nn.Module, named_linears: Dict[str, nn.Linear]
     ):
-        pass
+        for name, linear_layer in named_linears.items():
+            linear_layer.cuda()
+            w = linear_layer.weight.data
+            w, scales, zeros = self.pseudo_quantize_tensor(w)
+            scales = scales.t().contiguous()
+            zeros = zeros.t().contiguous()
+            linear_layer.weight.data = w
+            awq_linear = WQLinear_GEMM.from_linear(linear_layer, self.w_bits, self.group_size, scales, zeros, self.output_dtype)
+            linear_layer.cpu()
+            awq_linear.to(next(transformer_block.parameters()).device)
+            set_op_by_name(transformer_block, name, awq_linear)
+            
 
     @torch.inference_mode()
     def _apply_clips(
@@ -153,7 +170,6 @@ class AWQQuantizer:
     ):
         for clip_name, clip_tensor in clip_list:
             layer = get_op_by_name(module, clip_name)
-            print(f"clipping {clip_name}")
             layer.to("cuda")
             clip_tensor.to("cuda")
             w = layer.weight.data

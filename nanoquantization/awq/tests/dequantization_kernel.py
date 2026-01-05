@@ -2,7 +2,7 @@ from typing import Tuple
 import torch
 import pytest
 import torch.nn as nn
-from nanoquantization.awq.modules.gemm import awq_dequantize, WQLinear_GEMM, awq_gemm
+from nanoquantization.awq.layers.gemm import awq_dequantize, WQLinear_GEMM, awq_gemm
 
 """
 python -m nanoquantization.awq.tests.dequantization_kernel

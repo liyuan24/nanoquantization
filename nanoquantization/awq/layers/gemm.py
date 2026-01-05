@@ -246,13 +246,15 @@ def awq_gemm_kernel(
     shift_order = shift_order.broadcast_to(BLOCK_SIZE_K * (BLOCK_SIZE_N // 8), 8)
     shift_order = shift_order.reshape(BLOCK_SIZE_K, BLOCK_SIZE_N)
 
-    accumulator_dtype = out_ptr.type.element_ty
+    accumulator_dtype = tl.float32
+    output_dtype = out_ptr.type.element_ty
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=accumulator_dtype)
 
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K * SPLIT_K)):
         masks_k = offsets_k < K
         masks_x = masks_x_m[:, None] & masks_k[None, :]
         x = tl.load(x_ptr + offsets_x, mask=masks_x, other=0.0)
+        x = x.to(output_dtype)
 
         masks_qweight = masks_k[:, None] & masks_qweight_n[None, :]
         qweight = tl.load(qweight_ptr + offsets_qweight, mask=masks_qweight, other=0.0)
@@ -283,8 +285,11 @@ def awq_gemm_kernel(
         qweight = (qweight >> shift_order) & 0xF
         qzeros = (qzeros >> shift_order) & 0xF
         qweight = (qweight - qzeros) * qscales
+        qweight = qweight.to(output_dtype)
 
         # need to assign the updated accumulator back to the accumulator variable otherwise it will not be updated
+        # NOTICE: for bfloat16 type of activation and weight, here we are doing matrix multiplication in bf16 and accumulate in fp32
+        # since tensor core can only support fp32 accumulation for bf16 matrix multiplication
         accumulator = tl.dot(x, qweight, acc=accumulator, out_dtype=accumulator_dtype) # accumulator += x * qweight
 
         offsets_k += BLOCK_SIZE_K * SPLIT_K
@@ -295,7 +300,8 @@ def awq_gemm_kernel(
     offsets_out_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offsets_out = offsets_out_m[:, None] * N + offsets_out_n[None, :]
     masks_out = (offsets_out_m[:, None] < M) & (offsets_out_n[None, :] < N)
-    tl.store(out_ptr + offsets_out + pid_k * M * N, accumulator, mask=masks_out)
+    # NOTICE: for bf16 output type, we cast the fp32 accumulator back to bf16
+    tl.store(out_ptr + offsets_out + pid_k * M * N, accumulator.to(output_dtype), mask=masks_out)
     
 
 def awq_gemm(
@@ -360,6 +366,7 @@ class WQLinear_GEMM(nn.Module):
         out_features: int,
         device,
         bias: bool = False,
+        output_dtype: torch.dtype = torch.bfloat16,
     ):
         super().__init__()
         if w_bits not in [4]:
@@ -391,7 +398,7 @@ class WQLinear_GEMM(nn.Module):
             "qscales",
             torch.zeros(
                 (in_features // group_size, out_features),
-                dtype=torch.float16,
+                dtype=output_dtype,
                 device=device,
             ),
         )
@@ -399,7 +406,7 @@ class WQLinear_GEMM(nn.Module):
             "qzeros",
             torch.zeros(
                 (in_features // group_size, out_features // (32 // self.w_bits)),
-                dtype=torch.float16,
+                dtype=torch.int32,
                 device=device,
             ),
         )
@@ -408,7 +415,7 @@ class WQLinear_GEMM(nn.Module):
                 "bias",
                 torch.zeros(
                     (out_features),
-                    dtype=torch.float16,
+                    dtype=torch.bfloat16,
                     device=device,
                 ),
             )
@@ -423,6 +430,7 @@ class WQLinear_GEMM(nn.Module):
         group_size: int,
         scales: torch.Tensor,
         zeros: torch.Tensor,
+        output_dtype: torch.dtype = torch.bfloat16,
     ) -> "WQLinear_GEMM":
         """
         Args:
@@ -439,10 +447,11 @@ class WQLinear_GEMM(nn.Module):
             linear_layer.out_features,
             linear_layer.weight.device,
             linear_layer.bias is not None,
+            output_dtype,
         )
-        awq_linear.qscales = scales.clone().half()
+        awq_linear.qscales = scales.clone().to(output_dtype)
         if linear_layer.bias is not None:
-            awq_linear.bias = linear_layer.bias.clone().half()
+            awq_linear.bias = linear_layer.bias.clone().to(output_dtype)
 
         # convert float weight to int weight(quantization)
         intweight = []
@@ -530,7 +539,7 @@ class WQLinear_GEMM(nn.Module):
             out = torch.matmul(x, out)
         else:
             # fuse dequantization and matrix multiplication into one kernel
-            out = awq_gemm(x, self.qweight, self.qscales, self.qzeros)
+            out = awq_gemm(x, self.qweight, self.qscales, self.qzeros, split_k_iters=8)
         if self.bias is not None:
             out.add_(self.bias)
         return out.reshape(out_shape)
