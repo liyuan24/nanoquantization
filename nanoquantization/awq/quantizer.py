@@ -11,6 +11,7 @@ from nanoquantization.awq.utils.module import (
     set_op_by_name,
 )
 from nanoquantization.layers.norm import RMSNorm
+from nanoquantization.utils.quantization import pseudo_quantize
 import torch.nn as nn
 from transformers import AutoTokenizer
 import torch
@@ -48,7 +49,7 @@ class AWQQuantizer:
         self.apply_clip = apply_clip
         self.fake_quantization = fake_quantization
         self.output_dtype = output_dtype
-        
+
     @torch.inference_mode()
     def _module_forward(
         self, module: nn.Module, x: torch.Tensor, module_kwargs: Dict[str, Any]
@@ -156,11 +157,17 @@ class AWQQuantizer:
             scales = scales.t().contiguous()
             zeros = zeros.t().contiguous()
             linear_layer.weight.data = w
-            awq_linear = WQLinear_GEMM.from_linear(linear_layer, self.w_bits, self.group_size, scales, zeros, self.output_dtype)
+            awq_linear = WQLinear_GEMM.from_linear(
+                linear_layer,
+                self.w_bits,
+                self.group_size,
+                scales,
+                zeros,
+                self.output_dtype,
+            )
             linear_layer.cpu()
             awq_linear.to(next(transformer_block.parameters()).device)
             set_op_by_name(transformer_block, name, awq_linear)
-            
 
     @torch.inference_mode()
     def _apply_clips(
@@ -424,54 +431,9 @@ class AWQQuantizer:
     def pseudo_quantize_tensor(
         self, x: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Simulate the quantization and de-quantization of a tensor to w_bits bits.
-        """
-        orig_shape = x.shape
-        if self.group_size > 0:
-            assert (
-                x.shape[-1] % self.group_size == 0
-            ), "x.shape[-1] must be divisible by group_size"
-            x = x.view(-1, self.group_size)
-        assert torch.isnan(x).sum() == 0, "weight should not contain nan"
-        device = x.device
-
-        if self.zero_point:
-            # asymmetric quantization formula: q = round(x / scale) + zero_point
-            # get the max for each group(row)
-            max_val = x.amax(dim=-1, keepdim=True).to(device)
-            # get the min for each group(row)
-            min_val = x.amin(dim=-1, keepdim=True).to(device)
-            max_quant_int = 2**self.w_bits - 1
-            min_quant_int = 0
-            # map the values between min_val and max_val to min_quant_int and max_quant_int
-            scales = (max_val - min_val).clamp(min=1e-5) / max_quant_int
-            # make sure the min_val is mapped to 0 which is the minimum quantized value
-            zeros = (
-                (-torch.round(min_val / scales))
-                .clamp(min=min_quant_int, max=max_quant_int)
-                .to(device)
-            )
-            # simulation quantization and de-quantization
-            x = (torch.round(x / scales) + zeros).clamp(
-                min=min_quant_int, max=max_quant_int
-            )  # quantization
-            x = (x - zeros) * scales  # de-quantization
-            zeros = zeros.view(orig_shape[0], -1)
-        else:
-            # symmetric quantization formula: q = round(x / scale)
-            max_quant_int = 2 ** (self.w_bits - 1) - 1
-            min_quant_int = -(2 ** (self.w_bits - 1))
-            max_val = x.abs().amax(dim=-1, keepdim=True).to(device)
-            scales = max_val / max_quant_int
-            # simulate quantization and de-quantization
-            x = torch.round(x / scales).clamp(
-                min=min_quant_int, max=max_quant_int
-            )  # quantization
-            x = x * scales  # de-quantization
-            zeros = None
-
-        x = x.reshape(orig_shape)
-        scales = scales.view(orig_shape[0], -1)
-        # NOTE: this scales is the block quantization scale, not the weight scale factors from activation magnitude
-        return x, scales, zeros
+        return pseudo_quantize(
+            x,
+            group_size=self.group_size,
+            w_bits=self.w_bits,
+            zero_point=self.zero_point,
+        )

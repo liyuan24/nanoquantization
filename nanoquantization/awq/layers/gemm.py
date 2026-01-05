@@ -179,6 +179,7 @@ def awq_dequantize(
     )
     return result
 
+
 @triton.jit
 def awq_gemm_kernel(
     x_ptr,
@@ -213,11 +214,12 @@ def awq_gemm_kernel(
     offsets_qzeros_n = pid_n * BLOCK_SIZE_N // 8 + tl.arange(0, BLOCK_SIZE_N // 8)
     masks_qzeros_n = offsets_qzeros_n < N // 8
 
-    offsets_k = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K) # for the first block in K dimension
+    offsets_k = pid_k * BLOCK_SIZE_K + tl.arange(
+        0, BLOCK_SIZE_K
+    )  # for the first block in K dimension
     offsets_x = offsets_x_m[:, None] * K + offsets_k[None, :]
     offsets_qweight = offsets_k[:, None] * N // 8 + offsets_qweight_n[None, :]
 
-    
     # The unpack logic is as follows:
     # When we pack 8 4-bit integers into 1 32-bit integer,
     # 0th 4-bit integer is the least significant 4 bits
@@ -261,26 +263,40 @@ def awq_gemm_kernel(
         # replicate the qweight 8 times along the column dimension since each column in qweight is 8 4-bit integers packed into 1 32-bit integer
         qweight = tl.interleave(qweight, qweight)
         qweight = tl.interleave(qweight, qweight)
-        qweight = tl.interleave(qweight, qweight) # shape: [BLOCK_SIZE_K, BLOCK_SIZE_N]
+        qweight = tl.interleave(qweight, qweight)  # shape: [BLOCK_SIZE_K, BLOCK_SIZE_N]
 
         # the assumption is that each column in qweight share the same qscales and qzeros which is guaranteed by group_size % BLOCK_SIZE_K = 0
-        offsets_qscales_zeros_k = (BLOCK_SIZE_K * SPLIT_K * k + pid_k * BLOCK_SIZE_K) // group_size + tl.arange(0, 1)
-        offsets_qscales = offsets_qscales_zeros_k[:, None] * N + offsets_qscales_n[None, :]
+        offsets_qscales_zeros_k = (
+            BLOCK_SIZE_K * SPLIT_K * k + pid_k * BLOCK_SIZE_K
+        ) // group_size + tl.arange(0, 1)
+        offsets_qscales = (
+            offsets_qscales_zeros_k[:, None] * N + offsets_qscales_n[None, :]
+        )
         masks_qscales_k = offsets_qscales_zeros_k < K // group_size
         masks_qscales = masks_qscales_k[:, None] & masks_qscales_n[None, :]
-        qscales = tl.load(qscales_ptr + offsets_qscales, mask=masks_qscales, other=0.0) # shape: [1, BLOCK_SIZE_N]
-        qscales = qscales.broadcast_to(BLOCK_SIZE_K, BLOCK_SIZE_N) # shape: [BLOCK_SIZE_K, BLOCK_SIZE_N]
+        qscales = tl.load(
+            qscales_ptr + offsets_qscales, mask=masks_qscales, other=0.0
+        )  # shape: [1, BLOCK_SIZE_N]
+        qscales = qscales.broadcast_to(
+            BLOCK_SIZE_K, BLOCK_SIZE_N
+        )  # shape: [BLOCK_SIZE_K, BLOCK_SIZE_N]
 
-        offsets_qzeros = offsets_qscales_zeros_k[:, None] * N // 8 + offsets_qzeros_n[None, :]
+        offsets_qzeros = (
+            offsets_qscales_zeros_k[:, None] * N // 8 + offsets_qzeros_n[None, :]
+        )
         masks_qzeros_k = offsets_qscales_zeros_k < K // group_size
         masks_qzeros = masks_qzeros_k[:, None] & masks_qzeros_n[None, :]
-        qzeros = tl.load(qzeros_ptr + offsets_qzeros, mask=masks_qzeros, other=0.0) # shape: [1, BLOCK_SIZE_N // 8]
+        qzeros = tl.load(
+            qzeros_ptr + offsets_qzeros, mask=masks_qzeros, other=0.0
+        )  # shape: [1, BLOCK_SIZE_N // 8]
         # replicate the qzeros 8 times along the column dimension since each column in qzeros is 8 4-bit integers packed into 1 32-bit integer
         qzeros = tl.interleave(qzeros, qzeros)
         qzeros = tl.interleave(qzeros, qzeros)
-        qzeros = tl.interleave(qzeros, qzeros) # shape: [1, BLOCK_SIZE_N]
-        qzeros = qzeros.broadcast_to(BLOCK_SIZE_K, BLOCK_SIZE_N) # shape: [BLOCK_SIZE_K, BLOCK_SIZE_N]
-        
+        qzeros = tl.interleave(qzeros, qzeros)  # shape: [1, BLOCK_SIZE_N]
+        qzeros = qzeros.broadcast_to(
+            BLOCK_SIZE_K, BLOCK_SIZE_N
+        )  # shape: [BLOCK_SIZE_K, BLOCK_SIZE_N]
+
         # do the unpacking for both qweight and qzeros
         qweight = (qweight >> shift_order) & 0xF
         qzeros = (qzeros >> shift_order) & 0xF
@@ -290,19 +306,25 @@ def awq_gemm_kernel(
         # need to assign the updated accumulator back to the accumulator variable otherwise it will not be updated
         # NOTICE: for bfloat16 type of activation and weight, here we are doing matrix multiplication in bf16 and accumulate in fp32
         # since tensor core can only support fp32 accumulation for bf16 matrix multiplication
-        accumulator = tl.dot(x, qweight, acc=accumulator, out_dtype=accumulator_dtype) # accumulator += x * qweight
+        accumulator = tl.dot(
+            x, qweight, acc=accumulator, out_dtype=accumulator_dtype
+        )  # accumulator += x * qweight
 
         offsets_k += BLOCK_SIZE_K * SPLIT_K
         offsets_x += BLOCK_SIZE_K * SPLIT_K
         offsets_qweight += BLOCK_SIZE_K * SPLIT_K * (N // 8)
-    
+
     offsets_out_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offsets_out_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offsets_out = offsets_out_m[:, None] * N + offsets_out_n[None, :]
     masks_out = (offsets_out_m[:, None] < M) & (offsets_out_n[None, :] < N)
     # NOTICE: for bf16 output type, we cast the fp32 accumulator back to bf16
-    tl.store(out_ptr + offsets_out + pid_k * M * N, accumulator.to(output_dtype), mask=masks_out)
-    
+    tl.store(
+        out_ptr + offsets_out + pid_k * M * N,
+        accumulator.to(output_dtype),
+        mask=masks_out,
+    )
+
 
 def awq_gemm(
     x: torch.Tensor,

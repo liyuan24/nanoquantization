@@ -26,6 +26,7 @@ def get_op_by_name(module: nn.Module, name: str) -> nn.Module:
             return submodule
     raise ValueError(f"op {name} not found in module {module}")
 
+
 # TransformerBlock (layer)
 # ├── self_attn (Module)
 # │   ├── q_proj (Linear)

@@ -104,7 +104,7 @@ class TestAWQDequantizeKernel:
             result.dtype == qscales.dtype
         ), f"Expected dtype {qscales.dtype}, got {result.dtype}"
         assert torch.allclose(result, original_weight.t().contiguous(), atol=1e-2)
-    
+
     def test_gemm_output(self, sample_quantized_data):
         original_weight = sample_quantized_data["original_weight"]
         qweight = sample_quantized_data["qweight"]
@@ -115,9 +115,13 @@ class TestAWQDequantizeKernel:
         num_tokens = 8
 
         # the input tensor
-        x = torch.randn(num_tokens, in_features, dtype=torch.float16, device=original_weight.device)
+        x = torch.randn(
+            num_tokens, in_features, dtype=torch.float16, device=original_weight.device
+        )
 
-        print(f"x type: {x.dtype}, original_weight type: {original_weight.dtype}, qweight type: {qweight.dtype}, qscales type: {qscales.dtype}, qzeros type: {qzeros.dtype}")
+        print(
+            f"x type: {x.dtype}, original_weight type: {original_weight.dtype}, qweight type: {qweight.dtype}, qscales type: {qscales.dtype}, qzeros type: {qzeros.dtype}"
+        )
 
         result = awq_gemm(x, qweight, qscales, qzeros, split_k_iters=8)
 
@@ -129,7 +133,9 @@ class TestAWQDequantizeKernel:
             result.dtype == qscales.dtype
         ), f"Expected dtype {qscales.dtype}, got {result.dtype}"
         expected_result = torch.matmul(x, original_weight.t().contiguous())
-        assert torch.allclose(result, torch.matmul(x, original_weight.t().contiguous()), atol=1.0)
+        assert torch.allclose(
+            result, torch.matmul(x, original_weight.t().contiguous()), atol=1.0
+        )
 
 
 if __name__ == "__main__":

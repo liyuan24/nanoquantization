@@ -123,15 +123,15 @@ def load_qwen3_model(model_path: str):
     print(f"\n{'='*80}")
     print(f"Loading model from: {model_path}")
     print(f"{'='*80}\n")
-    
+
     # Load tokenizer and config
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-    
+
     # Set default dtype and device
     torch.set_default_dtype(hf_config.torch_dtype)
     torch.set_default_device("cuda")
-    
+
     # Initialize model with config
     model = Qwen3ForCausalLM(
         num_hidden_layers=hf_config.num_hidden_layers,
@@ -146,12 +146,12 @@ def load_qwen3_model(model_path: str):
         rope_theta=hf_config.rope_theta,
         rms_norm_eps=hf_config.rms_norm_eps,
     )
-    
+
     # Load weights
     print("Loading model weights...")
     load_model(model, model_path)
     print("✓ Model loaded successfully\n")
-    
+
     return model, tokenizer, hf_config
 
 
@@ -160,33 +160,34 @@ def save_quantized_model(model, tokenizer, hf_config, output_dir: str, args):
     print(f"\n{'='*80}")
     print(f"Saving quantized model to: {output_dir}")
     print(f"{'='*80}\n")
-    
+
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Save model weights in safetensors format
     print("Saving model weights (safetensors format)...")
     state_dict = model.state_dict()
-    
+
     # Convert state dict to CPU and ensure all tensors are contiguous
     state_dict_cpu = {k: v.cpu().contiguous() for k, v in state_dict.items()}
-    
+
     # Save as safetensors
     save_file(state_dict_cpu, output_path / "model.safetensors")
-    
+
     # Create model index file for HF compatibility
     import json
+
     model_index = {
         "metadata": {"format": "pt"},
-        "weight_map": {k: "model.safetensors" for k in state_dict_cpu.keys()}
+        "weight_map": {k: "model.safetensors" for k in state_dict_cpu.keys()},
     }
     with open(output_path / "model.safetensors.index.json", "w") as f:
         json.dump(model_index, f, indent=2)
-    
+
     # Save tokenizer
     print("Saving tokenizer...")
     tokenizer.save_pretrained(output_path)
-    
+
     # Add quantization config to HF config
     print("Saving config with quantization metadata...")
     quant_config = {
@@ -201,20 +202,20 @@ def save_quantized_model(model, tokenizer, hf_config, output_dir: str, args):
             "n_samples": args.n_samples,
             "max_seq_len": args.max_seq_len,
             "apply_clip": args.apply_clip,
-        }
+        },
     }
-    
+
     # Add quantization_config to the HF config
     hf_config.quantization_config = quant_config
-    
+
     # Save config (now includes quantization_config)
     hf_config.save_pretrained(output_path)
-    
+
     print(f"\n✓ Model saved successfully to {output_dir}")
     print(f"  - Model weights: model.safetensors")
     print(f"  - Config with quantization metadata: config.json")
     print(f"  - Tokenizer files saved\n")
-    
+
     # Push to Hugging Face Hub if requested
     if args.push_to_hub:
         push_to_huggingface_hub(output_dir, args)
@@ -223,18 +224,18 @@ def save_quantized_model(model, tokenizer, hf_config, output_dir: str, args):
 def push_to_huggingface_hub(output_dir: str, args):
     """Push the quantized model to Hugging Face Hub."""
     from huggingface_hub import HfApi, create_repo
-    
+
     # Determine the model ID
     if args.hub_model_id:
         repo_id = args.hub_model_id
     else:
         # Use the output directory basename as the model name
         repo_id = Path(output_dir).name
-    
+
     print(f"\n{'='*80}")
     print(f"Pushing model to Hugging Face Hub: {repo_id}")
     print(f"{'='*80}\n")
-    
+
     try:
         # Create repository (if it doesn't exist)
         print(f"Creating/checking repository: {repo_id}")
@@ -243,7 +244,7 @@ def push_to_huggingface_hub(output_dir: str, args):
             exist_ok=True,
             repo_type="model",
         )
-        
+
         # Upload all files
         print(f"Uploading files from {output_dir}...")
         api = HfApi()
@@ -253,10 +254,10 @@ def push_to_huggingface_hub(output_dir: str, args):
             repo_type="model",
             commit_message=f"Upload AWQ quantized model ({args.w_bits}-bit, group_size={args.group_size})",
         )
-        
+
         print(f"\n✓ Model successfully pushed to Hugging Face Hub!")
         print(f"  Repository: https://huggingface.co/{repo_id}")
-        
+
     except Exception as e:
         print(f"\n✗ Failed to push to Hugging Face Hub: {e}")
         print("  Make sure you are logged in with `huggingface-cli login`\n")
@@ -264,14 +265,16 @@ def push_to_huggingface_hub(output_dir: str, args):
 
 def main():
     args = parse_args()
-    
-    print("\n" + "="*80)
+
+    print("\n" + "=" * 80)
     print("AWQ Quantization for Qwen3-0.6B")
-    print("="*80)
+    print("=" * 80)
     print(f"\nConfiguration:")
     print(f"  Model: {args.model_path}")
     print(f"  Output: {args.output_dir}")
-    print(f"  Quantization: {args.w_bits}-bit, group_size={args.group_size}, zero_point={args.zero_point}")
+    print(
+        f"  Quantization: {args.w_bits}-bit, group_size={args.group_size}, zero_point={args.zero_point}"
+    )
     print(f"  Calibration: {args.calibration_dataset} ({args.n_samples} samples)")
     print(f"  Apply clipping: {args.apply_clip}")
     print(f"  Save model: {args.save_quantized_model}")
@@ -281,14 +284,14 @@ def main():
     else:
         print(f"  Push to Hub: No")
     print(f"  Evaluate perplexity: {args.eval_ppl}\n")
-    
+
     # Load model
     start_time = time.time()
     model, tokenizer, hf_config = load_qwen3_model(args.model_path)
     output_dtype = hf_config.torch_dtype
     load_time = time.time() - start_time
     print(f"Model loading time: {load_time:.2f}s\n")
-    
+
     # Optional: Evaluate perplexity before quantization
     # if args.eval_ppl:
     #     print("\n" + "="*80)
@@ -308,12 +311,12 @@ def main():
     #         print(f"\n✓ Perplexity BEFORE quantization: {ppl_before:.2f}\n")
     #     except Exception as e:
     #         print(f"Warning: Could not evaluate perplexity: {e}\n")
-    
+
     # Initialize quantizer
-    print("="*80)
+    print("=" * 80)
     print("Starting AWQ quantization...")
-    print("="*80 + "\n")
-    
+    print("=" * 80 + "\n")
+
     quantizer = AWQQuantizer(
         model=model,
         tokenizer=tokenizer,
@@ -330,27 +333,30 @@ def main():
         fake_quantization=False,
         output_dtype=output_dtype,
     )
-    
+
     # Run quantization
     quant_start_time = time.time()
     quantizer.quantize()
     quant_time = time.time() - quant_start_time
-    
-    print("\n" + "="*80)
-    print(f"✓ Quantization completed in {quant_time:.2f}s ({quant_time/60:.2f} minutes)")
-    print("="*80 + "\n")
-    
+
+    print("\n" + "=" * 80)
+    print(
+        f"✓ Quantization completed in {quant_time:.2f}s ({quant_time/60:.2f} minutes)"
+    )
+    print("=" * 80 + "\n")
+
     # Move model back to CUDA after quantization (quantizer moves layers to CPU to save memory)
     # Also convert to float16 to match quantized layer dtype
     model.cuda()
-    
+
     # Optional: Evaluate perplexity after quantization
     if args.eval_ppl:
-        print("="*80)
+        print("=" * 80)
         print("Evaluating perplexity AFTER quantization...")
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
         try:
             from nanoquantization.benchmark.perplexity import calculate_perplexity
+
             ppl_after = calculate_perplexity(
                 model=model,
                 tokenizer=tokenizer,
@@ -363,26 +369,28 @@ def main():
             print(f"\n✓ Perplexity AFTER quantization: {ppl_after:.2f}")
         except Exception as e:
             print(f"Warning: Could not evaluate perplexity: {e}\n")
-    
+
     # Save quantized model (if enabled)
     if args.save_quantized_model:
         save_quantized_model(model, tokenizer, hf_config, args.output_dir, args)
     else:
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("Skipping model save (--save_quantized_model flag not set)")
-        print("="*80 + "\n")
-    
+        print("=" * 80 + "\n")
+
     total_time = time.time() - start_time
-    print("="*80)
+    print("=" * 80)
     print(f"✓ Total time: {total_time:.2f}s ({total_time/60:.2f} minutes)")
-    print("="*80 + "\n")
-    
+    print("=" * 80 + "\n")
+
     if args.save_quantized_model:
         print(f"Quantized model saved to: {args.output_dir}")
         print("\nOutput structure:")
         print("  ├── model.safetensors              (quantized model weights)")
         print("  ├── model.safetensors.index.json  (weight map)")
-        print("  ├── config.json                    (model config + quantization metadata)")
+        print(
+            "  ├── config.json                    (model config + quantization metadata)"
+        )
         print("  ├── tokenizer.json                 (tokenizer)")
         print("  └── tokenizer_config.json          (tokenizer config)")
         print("\nThe model is saved in Hugging Face safetensors format for:")
@@ -390,11 +398,12 @@ def main():
         print("  • Safe deserialization (no arbitrary code execution)")
         print("  • Better memory efficiency")
         print("  • Cross-platform compatibility")
-        print("\nQuantization config is embedded in config.json under 'quantization_config' key")
+        print(
+            "\nQuantization config is embedded in config.json under 'quantization_config' key"
+        )
     else:
         print("Quantization completed. Model not saved to disk.")
 
 
 if __name__ == "__main__":
     main()
-
