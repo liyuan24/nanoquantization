@@ -19,3 +19,6 @@ huggingface/
 .python-version
 
 test*.py
+
+
+quantized_models/

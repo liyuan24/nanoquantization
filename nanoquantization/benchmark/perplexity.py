@@ -1,4 +1,5 @@
-from nanoquantization.awq.models.qwen3 import Qwen3ForCausalLM
+from nanoquantization.models.qwen3 import Qwen3ForCausalLM
+from nanoquantization.models.qwen3_quantized import Qwen3QuantizedForCausalLM
 from nanoquantization.utils.loader import load_model
 from transformers import AutoTokenizer, AutoConfig
 import torch.nn as nn
@@ -40,12 +41,13 @@ def calculate_perplexity(
 
 
 if __name__ == "__main__":
-    model_path = "/workspace/huggingface/Qwen3-0.6B"
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    hf_config = AutoConfig.from_pretrained(model_path)
+    weight_path = '/workspace/quantized_models/qwen3_0pt6b_awq'
+    tokenizer = AutoTokenizer.from_pretrained(weight_path)
+    hf_config = AutoConfig.from_pretrained(weight_path)
     torch.set_default_dtype(hf_config.torch_dtype)
     torch.set_default_device("cuda")
-    model = Qwen3ForCausalLM(
+    hf_config = AutoConfig.from_pretrained(weight_path)
+    quantized_model = Qwen3QuantizedForCausalLM(
         num_hidden_layers=hf_config.num_hidden_layers,
         vocab_size=hf_config.vocab_size,
         hidden_size=hf_config.hidden_size,
@@ -53,19 +55,22 @@ if __name__ == "__main__":
         total_num_kv_heads=hf_config.num_key_value_heads,
         max_position_embeddings=hf_config.max_position_embeddings,
         intermediate_size=hf_config.intermediate_size,
+        w_bits=hf_config.quantization_config['w_bits'],
+        group_size=hf_config.quantization_config['group_size'],
         head_dim=hf_config.head_dim,
         tie_word_embeddings=hf_config.tie_word_embeddings,
         rope_theta=hf_config.rope_theta,
         rms_norm_eps=hf_config.rms_norm_eps,
     )
-    load_model(model, model_path)
-    # ppl = calculate_perplexity(
-    #     model,
-    #     tokenizer,
-    #     window_size=2028,
-    #     stride=512,
-    #     dataset_id="wikitext",
-    #     dataset_subset="wikitext-2-v1",
-    #     dataset_split="test",
-    # )
-    # print(f"Perplexity for Qwen3-0.6B: {ppl:.2f}")
+    load_model(quantized_model, weight_path)
+    quantized_model.to("cuda")
+    ppl = calculate_perplexity(
+        quantized_model,
+        tokenizer,
+        window_size=2028,
+        stride=512,
+        dataset_id="wikitext",
+        dataset_subset="wikitext-2-v1",
+        dataset_split="test",
+    )
+    print(f"Perplexity for Qwen3-0.6B quantized model: {ppl:.2f}")

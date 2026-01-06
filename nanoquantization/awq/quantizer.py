@@ -2,7 +2,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from tqdm import tqdm
-from nanoquantization.awq.layers.gemm import WQLinear_GEMM
+from nanoquantization.layers.gemm import WQLinear_GEMM
 from nanoquantization.awq.utils.calibration_data import get_calibration_data
 from nanoquantization.awq.utils.module import (
     get_named_linear,

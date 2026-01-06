@@ -11,11 +11,27 @@ This script:
 The quantized model is saved in a format compatible with Hugging Face Transformers,
 using safetensors for efficient and safe weight storage.
 
-Usage:
+Usage for doing evaluation and skip saving the quantized model:
     python -m scripts.qwen3_0pt6_billion \
+    --quantize_model \
     --model_path /workspace/huggingface/Qwen3-0.6B \
     --output_dir ./quantized_models/qwen3-0.6b-awq \
     --eval_ppl
+
+Usage for saving the quantized model:
+    python -m scripts.qwen3_0pt6_billion \
+        --quantize_model \
+        --model_path /workspace/huggingface/Qwen3-0.6B \
+        --output_dir ./quantized_models/qwen3_0pt6b_awq \
+        --save_quantized_model \
+        --push_to_hub \
+        --hub_model_id seangogo/qwen3-0.6b-awq
+
+Usage for saving the quantized model and pushing to Hugging Face Hub:
+    python -m scripts.qwen3_0pt6_billion \
+        --output_dir ./quantized_models/qwen3_0pt6b_awq \
+        --push_to_hub \
+        --hub_model_id seangogo/qwen3_0pt6b_awq
 """
 
 import argparse
@@ -28,7 +44,7 @@ from transformers import AutoTokenizer, AutoConfig
 from safetensors.torch import save_file
 
 from nanoquantization.awq.quantizer import AWQQuantizer
-from nanoquantization.awq.models.qwen3 import Qwen3ForCausalLM
+from nanoquantization.models.qwen3 import Qwen3ForCausalLM
 from nanoquantization.utils.loader import load_model
 
 
@@ -39,6 +55,11 @@ def parse_args():
         type=str,
         default="Qwen/Qwen3-0.6B",
         help="Path to the pre-trained model (local path or HF model ID)",
+    )
+    parser.add_argument(
+        "--quantize_model",
+        action="store_true",
+        help="Quantize the model",
     )
     parser.add_argument(
         "--output_dir",
@@ -176,6 +197,7 @@ def save_quantized_model(model, tokenizer, hf_config, output_dir: str, args):
 
     # Create model index file for HF compatibility
     import json
+    import shutil
 
     model_index = {
         "metadata": {"format": "pt"},
@@ -196,6 +218,7 @@ def save_quantized_model(model, tokenizer, hf_config, output_dir: str, args):
         "group_size": args.group_size,
         "zero_point": args.zero_point,
         "version": "gemm",
+        "modules_to_not_convert": [],  # All linear layers quantized
         "calibration": {
             "dataset": args.calibration_dataset,
             "dataset_subset": args.calibration_subset,
@@ -211,14 +234,53 @@ def save_quantized_model(model, tokenizer, hf_config, output_dir: str, args):
     # Save config (now includes quantization_config)
     hf_config.save_pretrained(output_path)
 
-    print(f"\n✓ Model saved successfully to {output_dir}")
-    print(f"  - Model weights: model.safetensors")
-    print(f"  - Config with quantization metadata: config.json")
-    print(f"  - Tokenizer files saved\n")
+    # Save a README with loading instructions
+    print("Saving README with loading instructions...")
+    repo_name = args.hub_model_id if args.hub_model_id else Path(output_dir).name
+    readme_content = f"""# {Path(output_dir).name}
 
-    # Push to Hugging Face Hub if requested
-    if args.push_to_hub:
-        push_to_huggingface_hub(output_dir, args)
+This is a quantized version of {args.model_path} using AWQ (Activation-aware Weight Quantization).
+
+## Quantization Details
+
+- **Method**: AWQ
+- **Bits**: {args.w_bits}-bit
+- **Group Size**: {args.group_size}
+- **Zero Point**: {args.zero_point}
+- **Calibration Dataset**: {args.calibration_dataset} ({args.calibration_subset})
+- **Calibration Samples**: {args.n_samples}
+
+### Weight Storage Format
+
+- **Quantized Weights (qweight, qzeros)**: Stored as `int32` (packed 4-bit values)
+- **Scales (qscales)**: Stored as `{hf_config.torch_dtype}` (float precision)
+- **Non-quantized Layers** (embeddings, norms): Stored as `{hf_config.torch_dtype}`
+
+## Loading Instructions
+
+Follow the instructions in the [nanoquantization](https://github.com/liyuan24/nanoquantization) repository to load the quantized model.
+
+## Model Architecture
+
+The quantized model uses custom `WQLinear_GEMM` layers instead of standard `Linear` layers for efficient 4-bit inference with Triton kernels.
+
+## Requirements
+
+```bash
+pip install torch transformers safetensors triton
+```
+
+## Files Included
+
+- `model.safetensors` - Quantized model weights (qweight, qscales, qzeros)
+- `config.json` - Model configuration with quantization metadata
+- `tokenizer.json` - Tokenizer files
+"""
+
+    with open(output_path / "README.md", "w") as f:
+        f.write(readme_content)
+
+    print(f"\n✓ Model saved successfully to {output_dir}")
 
 
 def push_to_huggingface_hub(output_dir: str, args):
@@ -280,7 +342,7 @@ def main():
     print(f"  Save model: {args.save_quantized_model}")
     if args.push_to_hub:
         hub_id = args.hub_model_id if args.hub_model_id else Path(args.output_dir).name
-        print(f"  Push to Hub: Yes → {hub_id} (private={args.hub_private})")
+        print(f"  Push to Hub: Yes → {hub_id}")
     else:
         print(f"  Push to Hub: No")
     print(f"  Evaluate perplexity: {args.eval_ppl}\n")
@@ -293,24 +355,24 @@ def main():
     print(f"Model loading time: {load_time:.2f}s\n")
 
     # Optional: Evaluate perplexity before quantization
-    # if args.eval_ppl:
-    #     print("\n" + "="*80)
-    #     print("Evaluating perplexity BEFORE quantization...")
-    #     print("="*80 + "\n")
-    #     try:
-    #         from nanoquantization.benchmark.perplexity import calculate_perplexity
-    #         ppl_before = calculate_perplexity(
-    #             model=model,
-    #             tokenizer=tokenizer,
-    #             window_size=2048,
-    #             stride=512,
-    #             dataset_id="wikitext",
-    #             dataset_subset="wikitext-103-v1",
-    #             dataset_split="test",
-    #         )
-    #         print(f"\n✓ Perplexity BEFORE quantization: {ppl_before:.2f}\n")
-    #     except Exception as e:
-    #         print(f"Warning: Could not evaluate perplexity: {e}\n")
+    if args.eval_ppl:
+        print("\n" + "="*80)
+        print("Evaluating perplexity BEFORE quantization...")
+        print("="*80 + "\n")
+        try:
+            from nanoquantization.benchmark.perplexity import calculate_perplexity
+            ppl_before = calculate_perplexity(
+                model=model,
+                tokenizer=tokenizer,
+                window_size=2048,
+                stride=512,
+                dataset_id="wikitext",
+                dataset_subset="wikitext-103-v1",
+                dataset_split="test",
+            )
+            print(f"\n✓ Perplexity BEFORE quantization: {ppl_before:.2f}\n")
+        except Exception as e:
+            print(f"Warning: Could not evaluate perplexity: {e}\n")
 
     # Initialize quantizer
     print("=" * 80)
@@ -335,22 +397,22 @@ def main():
     )
 
     # Run quantization
-    quant_start_time = time.time()
-    quantizer.quantize()
-    quant_time = time.time() - quant_start_time
+    if args.quantize_model:
+        quant_start_time = time.time()
+        quantizer.quantize()
+        quant_time = time.time() - quant_start_time
 
-    print("\n" + "=" * 80)
-    print(
-        f"✓ Quantization completed in {quant_time:.2f}s ({quant_time/60:.2f} minutes)"
-    )
-    print("=" * 80 + "\n")
-
-    # Move model back to CUDA after quantization (quantizer moves layers to CPU to save memory)
-    # Also convert to float16 to match quantized layer dtype
-    model.cuda()
+        print("\n" + "=" * 80)
+        print(
+            f"✓ Quantization completed in {quant_time:.2f}s ({quant_time/60:.2f} minutes)"
+        )
+        print("=" * 80 + "\n")
 
     # Optional: Evaluate perplexity after quantization
     if args.eval_ppl:
+        # Move model back to CUDA after quantization (quantizer moves layers to CPU to save memory)
+        # Also convert to float16 to match quantized layer dtype
+        model.cuda()
         print("=" * 80)
         print("Evaluating perplexity AFTER quantization...")
         print("=" * 80 + "\n")
@@ -378,31 +440,11 @@ def main():
         print("Skipping model save (--save_quantized_model flag not set)")
         print("=" * 80 + "\n")
 
-    total_time = time.time() - start_time
-    print("=" * 80)
-    print(f"✓ Total time: {total_time:.2f}s ({total_time/60:.2f} minutes)")
-    print("=" * 80 + "\n")
-
-    if args.save_quantized_model:
-        print(f"Quantized model saved to: {args.output_dir}")
-        print("\nOutput structure:")
-        print("  ├── model.safetensors              (quantized model weights)")
-        print("  ├── model.safetensors.index.json  (weight map)")
-        print(
-            "  ├── config.json                    (model config + quantization metadata)"
-        )
-        print("  ├── tokenizer.json                 (tokenizer)")
-        print("  └── tokenizer_config.json          (tokenizer config)")
-        print("\nThe model is saved in Hugging Face safetensors format for:")
-        print("  • Faster loading times")
-        print("  • Safe deserialization (no arbitrary code execution)")
-        print("  • Better memory efficiency")
-        print("  • Cross-platform compatibility")
-        print(
-            "\nQuantization config is embedded in config.json under 'quantization_config' key"
-        )
+    # Push to Hugging Face Hub if requested
+    if args.push_to_hub:
+        push_to_huggingface_hub(args.output_dir, args)
     else:
-        print("Quantization completed. Model not saved to disk.")
+        print("Skipping Hugging Face Hub push (--push_to_hub flag not set)")
 
 
 if __name__ == "__main__":
