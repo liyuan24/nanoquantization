@@ -386,7 +386,7 @@ class WQLinear_GEMM(nn.Module):
         group_size: int,
         in_features: int,
         out_features: int,
-        device: str | torch.device = 'cpu',
+        device: str | torch.device = "cpu",
         bias: bool = False,
         output_dtype: torch.dtype = torch.bfloat16,
     ):

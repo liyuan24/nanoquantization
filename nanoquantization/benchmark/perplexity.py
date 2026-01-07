@@ -41,7 +41,7 @@ def calculate_perplexity(
 
 
 if __name__ == "__main__":
-    weight_path = '/workspace/quantized_models/qwen3_0pt6b_awq'
+    weight_path = "/workspace/quantized_models/qwen3_0pt6b_awq"
     tokenizer = AutoTokenizer.from_pretrained(weight_path)
     hf_config = AutoConfig.from_pretrained(weight_path)
     torch.set_default_dtype(hf_config.torch_dtype)
@@ -55,8 +55,8 @@ if __name__ == "__main__":
         total_num_kv_heads=hf_config.num_key_value_heads,
         max_position_embeddings=hf_config.max_position_embeddings,
         intermediate_size=hf_config.intermediate_size,
-        w_bits=hf_config.quantization_config['w_bits'],
-        group_size=hf_config.quantization_config['group_size'],
+        w_bits=hf_config.quantization_config["w_bits"],
+        group_size=hf_config.quantization_config["group_size"],
         head_dim=hf_config.head_dim,
         tie_word_embeddings=hf_config.tie_word_embeddings,
         rope_theta=hf_config.rope_theta,

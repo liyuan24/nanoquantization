@@ -1,7 +1,10 @@
 [project]
 name = "nanoquantization"
 version = "0.1.0"
-description = "Add your description here"
+description = "A self-contained end-to-end quantization framework"
+authors = [
+    {name = "Liyuan Liu"},
+]
 requires-python = ">=3.12"
 dependencies = [
     "torch>=2.0.0",
@@ -11,4 +14,10 @@ dependencies = [
     "datasets>=2.0.0",
     "accelerate>=0.20.0",
     "huggingface-hub>=0.20.0",
+    "tqdm>=4.65.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
 ]

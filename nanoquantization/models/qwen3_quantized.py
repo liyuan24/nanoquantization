@@ -107,7 +107,13 @@ class Qwen3QuantizedMLP(nn.Module):
     Per device MLP layer for Qwen3.
     """
 
-    def __init__(self, hidden_size: int, intermediate_size: int, w_bits: int = 4, group_size: int = 128):
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        w_bits: int = 4,
+        group_size: int = 128,
+    ):
         super().__init__()
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
@@ -179,7 +185,9 @@ class Qwen3QuantizedBlock(nn.Module):
             rope_theta=rope_theta,
             rms_norm_eps=rms_norm_eps,
         )
-        self.mlp = Qwen3QuantizedMLP(hidden_size, intermediate_size, w_bits=w_bits, group_size=group_size)
+        self.mlp = Qwen3QuantizedMLP(
+            hidden_size, intermediate_size, w_bits=w_bits, group_size=group_size
+        )
         self.input_layernorm = RMSNorm(norm_size=hidden_size, eps=rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(norm_size=hidden_size, eps=rms_norm_eps)
 

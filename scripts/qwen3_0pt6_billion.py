@@ -356,11 +356,12 @@ def main():
 
     # Optional: Evaluate perplexity before quantization
     if args.eval_ppl:
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("Evaluating perplexity BEFORE quantization...")
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
         try:
             from nanoquantization.benchmark.perplexity import calculate_perplexity
+
             ppl_before = calculate_perplexity(
                 model=model,
                 tokenizer=tokenizer,
