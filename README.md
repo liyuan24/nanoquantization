@@ -2,6 +2,8 @@
 
 A self-contained end-to-end quantization framework that currently supports AWQ (Activation-aware Weight Quantization) and Qwen3 models.
 
+* [Companion blog](https://liyuan24.github.io/writings/2026_01_06_post_training_quantization.html)
+
 ## Introduction
 
 This repository provides a complete quantization pipeline from model loading to quantized model deployment. The implementation intentionally avoids using the Hugging Face Transformers library to keep the quantization code concise. Instead, models are implemented layer by layer, providing full control over the quantization process and making it easier to understand and modify the quantization logic.
